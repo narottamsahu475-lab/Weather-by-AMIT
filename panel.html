@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Panther Quantum Control Panel</title>
+    <title>SPYEYE Quantum Control Panel</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Segoe UI', Arial, sans-serif; }
         body { background: #0f172a; color: #f8fafc; padding-top: 75px; }
@@ -68,14 +68,18 @@
         th { background-color: #334155; color: #38bdf8; font-weight: 600; text-transform: uppercase; font-size: 11px; }
         .badge { padding: 4px 8px; border-radius: 6px; font-size: 11px; font-weight: 700; display: inline-block; }
         .success-bg { background: rgba(5,150,105,0.2); color: #34d399; border: 1px solid rgba(5,150,105,0.4); }
+        .error-bg { background: rgba(239,68,68,0.15); color: #f87171; border: 1px solid rgba(239,68,68,0.3); }
 
         .modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(10, 15, 30, 0.7); backdrop-filter: blur(12px); display: none; justify-content: center; align-items: center; z-index: 9999; padding: 15px; }
-        .modal-box { background: rgba(30, 41, 59, 0.85); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 16px; width: 100%; max-width: 750px; max-height: 85vh; display: flex; flex-direction: column; box-shadow: 0 20px 50px rgba(0,0,0,0.5); overflow: hidden; animation: modalFadeIn 0.25s ease-out; }
+        .modal-box { background: rgba(30, 41, 59, 0.85); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 16px; width: 100%; max-width: 850px; max-height: 85vh; display: flex; flex-direction: column; box-shadow: 0 20px 50px rgba(0,0,0,0.5); overflow: hidden; animation: modalFadeIn 0.25s ease-out; }
         .modal-header { display: flex; justify-content: space-between; align-items: center; padding: 18px 22px; border-bottom: 1px solid rgba(255, 255, 255, 0.08); background: rgba(30, 41, 59, 0.4); }
         .modal-header h3 { font-size: 18px; font-weight: 700; color: #38bdf8; display: flex; align-items: center; gap: 8px; }
         .modal-close { font-size: 28px; cursor: pointer; color: #94a3b8; transition: color 0.15s; line-height: 1; }
         .modal-close:hover { color: #f8fafc; }
         .modal-body { padding: 20px; overflow-y: auto; flex-grow: 1; background: rgba(15, 23, 42, 0.4); }
+
+        .game-bal-pill { display: inline-block; padding: 3px 6px; background: #1e293b; border: 1px solid #475569; border-radius: 4px; font-size: 11px; margin: 2px; color: #cbd5e1; font-weight: 600; }
+        .game-bal-pill b { color: #34d399; }
         
         @keyframes modalFadeIn {
             from { transform: scale(0.96); opacity: 0; }
@@ -204,7 +208,26 @@
             </div>
 
             <div class="card">
-                <h3>📜 Live Activity Timeline</h3>
+                <h3 style="color:#f87171; border-left: 4px solid #ef4444;">⚠️ Realtime Engine Error & Diagnostic Logs (IST)</h3>
+                <div style="overflow-y:auto; max-height:240px; background: #0f172a; border-radius: 8px; border: 1px solid #334155;">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th style="width:18%;">Timestamp (IST)</th>
+                                <th style="width:18%;">Phone Number</th>
+                                <th style="width:20%;">Target Game</th>
+                                <th style="text-align:left; padding-left:15px;">Error Trigger Details</th>
+                            </tr>
+                        </thead>
+                        <tbody id="errorLogsTableBody">
+                            <tr><td colspan="4" style="color:#64748b; text-align:center;">No error signatures captured in this session stack.</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="card">
+                <h3>📜 Live Activity Timeline (IST)</h3>
                 <div class="timeline-container" id="timelineBody">
                     <div style="color:#64748b; text-align:center; padding:10px;">Waiting...</div>
                 </div>
@@ -228,13 +251,12 @@
                     <table>
                         <thead>
                             <tr>
-                                <th>Phone</th>
-                                <th>All Games</th>
-                                <th>Wallet</th>
+                                <th style="width: 15%;">Phone</th>
+                                <th style="text-align:left; padding-left: 20px;">All Games & Game-Wise Balances Breakdown</th>
                             </tr>
                         </thead>
                         <tbody id="recentRegistrationBody">
-                            <tr><td colspan="3" style="color:#64748b; text-align:center;">No data available.</td></tr>
+                            <tr><td colspan="2" style="color:#64748b; text-align:center;">No data available.</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -247,7 +269,6 @@
         var currentActiveModalType = null; 
         var alertedPhones = new Set();
         
-        // Audio Lock Bypass Initialization
         var isAudioUnlocked = false;
         function unlockAudioInterface() {
             if (isAudioUnlocked) return;
@@ -259,7 +280,6 @@
                 source.connect(audioCtx.destination);
                 source.start(0);
                 
-                // Trigger an empty text translation to sync internal speech synthesis
                 window.speechSynthesis.cancel();
                 let silentUtterance = new SpeechSynthesisUtterance("");
                 window.speechSynthesis.speak(silentUtterance);
@@ -271,7 +291,6 @@
             }
         }
 
-        // Hook interaction triggers to safely unlock browser audio policies
         window.addEventListener('click', unlockAudioInterface, { once: true });
         window.addEventListener('touchstart', unlockAudioInterface, { once: true });
 
@@ -302,7 +321,7 @@
         }
 
         function startEnginePipeline() {
-            unlockAudioInterface(); // Auto unlock on pipeline start click
+            unlockAudioInterface();
             fetch('/api/start', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -316,7 +335,6 @@
 
         function stopEnginePipeline() { fetch('/api/stop', { method: 'POST' }); }
 
-        // Core Voice Synthesis & Tone Generation Logic
         function playDynamicVipNotification(gameType, walletText) {
             try {
                 let cleanAmount = 0;
@@ -336,22 +354,25 @@
                 
                 oscillator.type = 'sine';
                 oscillator.frequency.setValueAtTime(880, audioCtx.currentTime); 
-                gainNode.gain.setValueAtTime(0.3, audioCtx.currentTime); // Enhanced volume depth
+                gainNode.gain.setValueAtTime(0.3, audioCtx.currentTime); 
                 
                 oscillator.start();
                 gainNode.gain.exponentialRampToValueAtTime(0.00001, audioCtx.currentTime + 0.15);
                 oscillator.stop(audioCtx.currentTime + 0.15);
                 
                 setTimeout(() => {
-                    // CRITICAL: Clear stuck pending utterances to prevent engine lockup
                     window.speechSynthesis.cancel(); 
                     
                     let speech = new SpeechSynthesisUtterance();
-                    speech.text = `${gameType} ${cleanAmount}`;
-                    speech.lang = "hi-IN"; 
+                    if(gameType === "BINGO") {
+                        speech.text = `Bingo Successful. Balance ${cleanAmount} Rupee`;
+                    } else {
+                        speech.text = `${gameType} ${cleanAmount}`;
+                    }
+                    speech.lang = "en-US"; 
                     speech.volume = 1.0;
-                    speech.rate = 0.92; // Enhanced readability index
-                    speech.pitch = 1.05;
+                    speech.rate = 0.90; 
+                    speech.pitch = 1.0;
                     
                     window.speechSynthesis.speak(speech);
                 }, 160);
@@ -479,28 +500,56 @@
             }
             document.getElementById("analyticsBody").innerHTML = analyticsRows;
 
+            let errorLogRows = "";
+            if (!data.error_logs || data.error_logs.length === 0) {
+                errorLogRows = `<tr><td colspan="4" style="color:#64748b; text-align:center;">No error signatures captured in this session stack.</td></tr>`;
+            } else {
+                data.error_logs.forEach(err => {
+                    errorLogRows += `<tr>
+                        <td>${err.time}</td>
+                        <td style="color:#f8fafc; font-weight:600;">+91 ${err.phone}</td>
+                        <td style="color:#60a5fa; font-weight:600;">${err.game}</td>
+                        <td style="text-align:left; padding-left:15px;"><span class="badge error-bg">${err.reason}</span></td>
+                    </tr>`;
+                });
+            }
+            document.getElementById("errorLogsTableBody").innerHTML = errorLogRows;
+
             let successHTML = "";
             cachedSuccessLogs = data.success_records || [];
             if (cachedSuccessLogs.length === 0) {
-                successHTML = `<tr><td colspan="3" style="color:#64748b;">No completed successful session logs detected.</td></tr>`;
+                successHTML = `<tr><td colspan="2" style="color:#64748b; text-align:center;">No completed successful session logs detected.</td></tr>`;
             } else {
                 cachedSuccessLogs.forEach(item => {
-                    let gameString = Array.isArray(item.games) ? item.games.join(", ") : "";
-                    successHTML += `<tr><td>+91 ${item.phone}</td><td style="color:#38bdf8; font-weight:600;">${gameString}</td><td style="color:#e2e8f0; font-weight:bold;">${item.wallet}</td></tr>`;
+                    let pillBlocks = "";
+                    if (item.game_balances) {
+                        Object.entries(item.game_balances).forEach(([gName, gBal]) => {
+                            pillBlocks += `<span class="game-bal-pill">${gName}: <b>${gBal}</b></span>`;
+                        });
+                    } else {
+                        let gameString = Array.isArray(item.games) ? item.games.join(", ") : "";
+                        pillBlocks = `<span style="color:#64748b;">${gameString}</span>`;
+                    }
+                    successHTML += `<tr>
+                        <td>+91 ${item.phone}</td>
+                        <td style="text-align:left; padding-left: 20px;">${pillBlocks}</td>
+                    </tr>`;
                 });
                 
-                // Sound tracking logic
                 cachedSuccessLogs.forEach(item => {
                     if (!alertedPhones.has(item.phone)) {
-                        let hasVip = item.games.includes("YonoVip");
-                        let hasBingo = item.games.includes("Bingo");
+                        let hasVip = item.games.includes("YonoVip") || item.games.includes("yonovip");
+                        let hasBingo = item.games.includes("Bingo") || item.games.includes("bingo101");
                         
-                        if (hasVip) {
+                        let bingoBalanceText = item.game_balances ? item.game_balances["Bingo"] : "";
+                        let vipBalanceText = item.game_balances ? item.game_balances["YonoVip"] : "";
+                        
+                        if (hasBingo) {
                             alertedPhones.add(item.phone);
-                            playDynamicVipNotification("VIP", item.wallet);
-                        } else if (hasBingo) {
+                            playDynamicVipNotification("BINGO", bingoBalanceText);
+                        } else if (hasVip) {
                             alertedPhones.add(item.phone);
-                            playDynamicVipNotification("BINGO", item.wallet);
+                            playDynamicVipNotification("VIP", vipBalanceText);
                         }
                     }
                 });
@@ -568,14 +617,17 @@
 
         function exportSuccessLogCSV() {
             if(cachedSuccessLogs.length === 0) { alert("Repository database clean. Export cancelled."); return; }
-            let csvContent = "data:text/csv;charset=utf-8,Phone,Games,Wallet\n";
+            let csvContent = "data:text/csv;charset=utf-8,Phone,Game,Balance\n";
             cachedSuccessLogs.forEach(r => { 
-                let gameString = Array.isArray(r.games) ? r.games.join(" | ") : "";
-                csvContent += `+91 ${r.phone},"${gameString}",${r.wallet}\n`; 
+                if (r.game_balances) {
+                    Object.entries(r.game_balances).forEach(([gName, gBal]) => {
+                        csvContent += `+91 ${r.phone},${gName},${gBal}\n`; 
+                    });
+                }
             });
             let encodedUri = encodeURI(csvContent);
             let link = document.createElement("a"); link.setAttribute("href", encodedUri);
-            link.setAttribute("download", `Success_Report_${new Date().toISOString().slice(0,10)}.csv`);
+            link.setAttribute("download", `Success_Report_Balances_${new Date().toISOString().slice(0,10)}.csv`);
             document.body.appendChild(link); link.click(); document.body.removeChild(link);
         }
 
