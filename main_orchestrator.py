@@ -472,7 +472,7 @@ async def process_single_registration():
         registered_games_list.append("567slot")
         await asyncio.sleep(2) 
         
-        other_games = ["YonoGames", "YonoSlots", "SpinCrush", "YonoVip", "Bingo", "MBMBet", "789Jackpots" "HiRummy", "Maha"]
+        other_games = ["YonoGames", "YonoSlots", "SpinCrush", "789Jackpots", "MBMBet", "Bingo", "YonoVip" "HiRummy", "Maha"]
         for game in other_games:
             sub_res, s_otp_flag = await run_game_step_async(phone, txn_id, game, used_otps, is_sub_game=True)
             if s_otp_flag: 
