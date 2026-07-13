@@ -2,7 +2,7 @@ import asyncio
 import aiohttp
 import re
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -54,7 +54,6 @@ live_stats = {
     "progress": 0,
     "eta": "---",
     "success_records": [],
-    "error_logs": [],  
     "recent_activity": [],
     "game_analytics": {},
     "registration_summary": {},
@@ -84,11 +83,6 @@ input_total_accounts = 0
 active_task_counter = 0
 global_service_id = "1929" 
 
-# Helper utility function to fetch accurate Indian Standard Time (IST)
-def get_ist_time():
-    ist_tz = timezone(timedelta(hours=5, minutes=30))
-    return datetime.now(ist_tz).strftime("%I:%M:%S %p")
-
 
 # ==========================================
 #          REUSABLE SPYEYE API CLIENT    
@@ -110,6 +104,11 @@ class SpyEyeClient:
 
     async def cancel_request(self, session: aiohttp.ClientSession, app_name: str, request_id: str) -> dict:
         url = f"{self.base_url}/yono?app={app_name}&action=cancel&requestid={request_id}&accesscode={self.access_code}"
+        async with session.get(url, ssl=False, timeout=10) as resp:
+            return await resp.json()
+
+    async def resend_otp(self, session: aiohttp.ClientSession, app_name: str, request_id: str) -> dict:
+        url = f"{self.base_url}/yono?app={app_name}&action=resendotp&requestid={request_id}&accesscode={self.access_code}"
         async with session.get(url, ssl=False, timeout=10) as resp:
             return await resp.json()
 
@@ -145,21 +144,10 @@ async def log_game_metric(game_name, status="success"):
         else:
             live_stats["game_analytics"][game_name]["failed"] += 1
 
-async def add_error_log(phone, game_name, error_reason):
-    async with stats_lock:
-        live_stats["error_logs"].insert(0, {
-            "time": get_ist_time(),
-            "phone": phone,
-            "game": game_name,
-            "reason": error_reason
-        })
-        if len(live_stats["error_logs"]) > 50:
-            live_stats["error_logs"].pop()
-
 async def add_timeline_event(phone, stage):
     async with stats_lock:
         live_stats["activity_timeline"].insert(0, {
-            "time": get_ist_time(),
+            "time": datetime.now().strftime("%H:%M:%S"),
             "phone": phone,
             "stage": stage
         })
@@ -262,7 +250,7 @@ async def terminate_4sim_order_async(txn_id, otp_received, phone, force_cancel=F
                     "phone": phone,
                     "txn_id": txn_id,
                     "reason": final_status,
-                    "time": get_ist_time()
+                    "time": datetime.now().strftime("%H:%M:%S")
                 })
     return final_status
 
@@ -293,9 +281,10 @@ async def handle_already_number(phone, txn_id, otp_flag):
 
 async def run_game_step_async(phone, txn_id, game_key, used_otps, is_sub_game=False):
     if game_key not in GAME_MAP:
-        return "failed", False, "0 INR"
+        return "failed", False
 
-    max_attempts = 12 if is_sub_game else 26
+    # UPDATED: Timeout 35s se 45s karne ke liye max_attempts 9 kiya (9 * 5s = 45s)
+    max_attempts = 9 if is_sub_game else 26
     send_attempt = 1
     last_known_request_id = None
     
@@ -318,16 +307,15 @@ async def run_game_step_async(phone, txn_id, game_key, used_otps, is_sub_game=Fa
                     if "already" in error_msg or "555" in error_msg:
                         await update_live_status(phone, "Already Reg", progress_val=0)
                         await log_game_metric(ui_name, "already")
-                        return "already", False, "0 INR"
+                        return "already", False
 
                     display_err = v_res.get("msg") or v_res.get("message") or "API Hold Error"
                     await update_live_status(phone, f"API Hold: {display_err[:22]}", progress_val=5)
-                    await add_error_log(phone, ui_name, f"Send OTP Hold: {display_err[:30]}")
                     
-                    if "rate limit" in error_msg or "too many requests" in error_msg:
-                        await asyncio.sleep(12)
+                    if "rate limit" in error_msg:
+                        await asyncio.sleep(10)
                     else:
-                        await asyncio.sleep(6)
+                        await asyncio.sleep(5)
                     send_attempt += 1
                     continue
                     
@@ -361,25 +349,23 @@ async def run_game_step_async(phone, txn_id, game_key, used_otps, is_sub_game=Fa
                                     
                                 await log_game_metric(ui_name, "success")
                                 await add_timeline_event(phone, f"Success Registered -> {ui_name}")
-                                return True, True, bal
+                                return True, True
                                 
                             elif "already registered" in v_msg or "555" in v_msg:
                                 await update_live_status(phone, "Already Reg", progress_val=0)
                                 used_otps.add(otp)
                                 await log_game_metric(ui_name, "already")
-                                return "already", True, "0 INR"
+                                return "already", True
                                 
                             else:
-                                display_v_msg = verify_res.get("msg") or "Wrong/Expired OTP"
                                 await update_live_status(phone, "Wrong/Expired OTP", progress_val=90)
-                                await add_error_log(phone, ui_name, f"Verify Failed: {display_v_msg[:30]}")
                                 used_otps.add(otp)
                                 await log_game_metric(ui_name, "failed")
-                                return False, True, "0 INR"
+                                return False, True
                                 
+                    # UPDATED: Agar 45s tak OTP na aaye, toh task ko SPYEYE se cancel karna hai
                     if not otp_found_flag:
                         await update_live_status(phone, "Canceling SPYEYE...", progress_val=10)
-                        await add_error_log(phone, ui_name, "OTP SMS Timeout (45s)")
                         try:
                             cancel_res = await spyeye_client.cancel_request(session, api_name, request_id)
                             if cancel_res.get("success") is True:
@@ -390,11 +376,10 @@ async def run_game_step_async(phone, txn_id, game_key, used_otps, is_sub_game=Fa
                         await update_live_status(phone, "Timeout", progress_val=0)
                         
                     await log_game_metric(ui_name, "failed")
-                    return "timeout", otp_found_flag, "0 INR"
+                    return "timeout", otp_found_flag
 
-            except Exception as e:
+            except Exception:
                 await update_live_status(phone, "Err: Connect Dropped", progress_val=5)
-                await add_error_log(phone, ui_name, f"Network Dropped: {str(e)[:30]}")
                 send_attempt += 1
                 await asyncio.sleep(4)
                 
@@ -406,9 +391,8 @@ async def run_game_step_async(phone, txn_id, game_key, used_otps, is_sub_game=Fa
                 pass
 
         await update_live_status(phone, "Failed Sending", progress_val=0)
-        await add_error_log(phone, ui_name, "Max Retries Failed Sending OTP")
         await log_game_metric(ui_name, "failed")
-        return "failed", False, "0 INR"
+        return "failed", False
 
 async def process_single_registration():
     global success_buy_count, active_task_counter, input_total_accounts, global_service_id
@@ -425,7 +409,7 @@ async def process_single_registration():
     failed_or_timeout_count = 0
     
     registered_games_list = []
-    game_balances_map = {}  
+    last_known_balance = "₹0"
     
     async with buy_lock:
         if stop_event.is_set() or success_buy_count >= input_total_accounts: 
@@ -463,7 +447,7 @@ async def process_single_registration():
     
     await add_timeline_event(phone, "Acquired New Number from 4Sim")
 
-    main_res, m_otp_flag, main_bal = await run_game_step_async(phone, txn_id, "567slot", used_otps, is_sub_game=False)
+    main_res, m_otp_flag = await run_game_step_async(phone, txn_id, "567slot", used_otps, is_sub_game=False)
     if m_otp_flag: 
         otp_received_anywhere = True
     
@@ -486,27 +470,26 @@ async def process_single_registration():
             live_stats["success_otps"] += 1
         success_chains_count += 1
         registered_games_list.append("567slot")
-        game_balances_map["567Slots"] = "₹" + main_bal.replace(" INR", "")
-        await asyncio.sleep(3.5) 
+        await asyncio.sleep(2) 
         
-        other_games = ["YonoGames", "YonoSlots", "SpinCrush", "YonoVip", "Bingo", "MBMBet", "789Jackpots", "HiRummy", "Maha"]
+        other_games = ["YonoGames", "YonoSlots", "SpinCrush", "YonoVip", "Bingo", "MBMBet", "789Jackpots" "HiRummy", "Maha"]
         for game in other_games:
-            ui_game_name = GAME_MAP[game]["ui"]
-            sub_res, s_otp_flag, sub_bal = await run_game_step_async(phone, txn_id, game, used_otps, is_sub_game=True)
+            sub_res, s_otp_flag = await run_game_step_async(phone, txn_id, game, used_otps, is_sub_game=True)
             if s_otp_flag: 
                 otp_received_anywhere = True
             
             if sub_res is True:
                 success_chains_count += 1
                 registered_games_list.append(game)
-                game_balances_map[ui_game_name] = "₹" + sub_bal.replace(" INR", "")
-                await asyncio.sleep(3.5)
+                async with stats_lock:
+                    for item in live_stats["recent_activity"]:
+                        if item["phone"] == phone and "INR" in str(item["balance"]):
+                            last_known_balance = "₹" + str(item["balance"]).replace(" INR", "")
+                await asyncio.sleep(2)
             elif sub_res == "already":
                 already_chains_count += 1
-                await asyncio.sleep(2.0)
             else:
                 failed_or_timeout_count += 1
-                await asyncio.sleep(2.0)
 
         await terminate_4sim_order_async(txn_id, otp_received_anywhere, phone)
         
@@ -514,11 +497,11 @@ async def process_single_registration():
             live_stats["success_records"].insert(0, {
                 "phone": phone,
                 "games": registered_games_list,
-                "game_balances": game_balances_map,  
+                "wallet": last_known_balance,
                 "success": success_chains_count,
                 "already": already_chains_count,
                 "failed": failed_or_timeout_count,
-                "time": get_ist_time()
+                "time": datetime.now().strftime("%H:%M:%S")
             })
             live_stats["progress"] = int((success_buy_count / input_total_accounts) * 100)
             live_stats["realtime_active_threads"] = max(0, live_stats["realtime_active_threads"] - 1)
@@ -529,18 +512,21 @@ async def dynamic_pipeline_runner(semaphore):
     while not stop_event.is_set() and success_buy_count < input_total_accounts:
         async with semaphore:
             await process_single_registration()
-        await asyncio.sleep(1.5)
+        await asyncio.sleep(1)
 
+# UPDATED: REAL-TIME POLLING BACKGROUND TASK FOR 4SIM & SPYEYE WALLET BALANCES
 async def live_balances_tracker_loop():
     while True:
         try:
             async with aiohttp.ClientSession() as session:
+                # 1. Fetch SPYEYE balance
                 async with session.get(f"{BASE_URL}/yono-api/login?accesscode={SPYEYE_API_KEY}", ssl=False, timeout=8) as r1:
                     d1 = await r1.json()
                     if d1.get("success"):
                         async with stats_lock:
                             live_stats["spyeye_balance"] = "₹" + str(int(float(d1.get("credits", 0))))
                 
+                # 2. Fetch 4Sim balance
                 async with session.get(f"https://api.4sim.st/getBalance?apikey={FOUR_SIM_API_KEY}", timeout=8) as r2:
                     d2 = await r2.json()
                     if d2.get("balance"):
@@ -548,7 +534,7 @@ async def live_balances_tracker_loop():
                             live_stats["foursim_balance"] = "₹" + str(int(float(d2.get("balance"))))
         except:
             pass
-        await asyncio.sleep(3)
+        await asyncio.sleep(2)
 
 async def core_engine_orchestrator(target, threads):
     global live_stats, success_buy_count, active_task_counter, input_total_accounts, logged_cancels
@@ -572,7 +558,6 @@ async def core_engine_orchestrator(target, threads):
         live_stats["progress"] = 0
         live_stats["eta"] = "Calculating..."
         live_stats["recent_activity"] = []
-        live_stats["error_logs"] = [] 
         live_stats["game_analytics"] = {} 
         live_stats["registration_summary"] = {}
         live_stats["activity_timeline"] = []
@@ -657,6 +642,7 @@ async def api_stop():
 async def api_logs():
     return JSONResponse(content=live_stats)
 
+# Start background balance polling loop on application startup context
 @app.on_event("startup")
 async def startup_event():
     asyncio.create_task(live_balances_tracker_loop())
